@@ -1,4 +1,8 @@
-import { isString, isUndefined } from '@nestjs/common/utils/shared.utils';
+import {
+  isNil,
+  isString,
+  isUndefined,
+} from '@nestjs/common/utils/shared.utils';
 import { Observable } from 'rxjs';
 import {
   CONNECT_EVENT,
@@ -14,6 +18,7 @@ import {
 } from '../constants';
 import { RmqContext } from '../ctx-host';
 import { Transport } from '../enums';
+import { RmqUrl } from '../external/rmq-url.interface';
 import { CustomTransportStrategy, RmqOptions } from '../interfaces';
 import {
   IncomingRequest,
@@ -26,15 +31,15 @@ let rqmPackage: any = {};
 export class ServerRMQ extends Server implements CustomTransportStrategy {
   public readonly transportId = Transport.RMQ;
 
-  private server: any = null;
-  private channel: any = null;
-  private readonly urls: string[];
-  private readonly queue: string;
-  private readonly prefetchCount: number;
-  private readonly queueOptions: any;
-  private readonly isGlobalPrefetchCount: boolean;
+  protected server: any = null;
+  protected channel: any = null;
+  protected readonly urls: string[] | RmqUrl[];
+  protected readonly queue: string;
+  protected readonly prefetchCount: number;
+  protected readonly queueOptions: any;
+  protected readonly isGlobalPrefetchCount: boolean;
 
-  constructor(private readonly options: RmqOptions['options']) {
+  constructor(protected readonly options: RmqOptions['options']) {
     super();
     this.urls = this.getOptionsProp(this.options, 'urls') || [RQM_DEFAULT_URL];
     this.queue =
@@ -80,8 +85,9 @@ export class ServerRMQ extends Server implements CustomTransportStrategy {
         setup: (channel: any) => this.setupChannel(channel, callback),
       });
     });
-    this.server.on(DISCONNECT_EVENT, () => {
+    this.server.on(DISCONNECT_EVENT, (err: any) => {
       this.logger.error(DISCONNECTED_RMQ_MESSAGE);
+      this.logger.error(err);
     });
   }
 
@@ -109,6 +115,9 @@ export class ServerRMQ extends Server implements CustomTransportStrategy {
     message: Record<string, any>,
     channel: any,
   ): Promise<void> {
+    if (isNil(message)) {
+      return;
+    }
     const { content, properties } = message;
     const rawMessage = JSON.parse(content.toString());
     const packet = this.deserializer.deserialize(rawMessage);

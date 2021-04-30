@@ -1,5 +1,8 @@
 import { RequestMethod } from '../../enums';
-import { CorsOptions } from '../../interfaces/external/cors-options.interface';
+import {
+  CorsOptions,
+  CorsOptionsDelegate,
+} from '../../interfaces/external/cors-options.interface';
 import { NestApplicationOptions } from '../../interfaces/nest-application-options.interface';
 
 export type ErrorHandler<TRequest = any, TResponse = any> = (
@@ -54,15 +57,18 @@ export interface HttpServer<TRequest = any, TResponse = any> {
   setViewEngine?(engineOrOptions: any): this;
   createMiddlewareFactory(
     method: RequestMethod,
-  ): (path: string, callback: Function) => any;
+  ):
+    | ((path: string, callback: Function) => any)
+    | Promise<(path: string, callback: Function) => any>;
   getRequestHostname?(request: TRequest): string;
   getRequestMethod?(request: TRequest): string;
-  getRequestUrl?(request: TResponse): string;
+  getRequestUrl?(request: TRequest): string;
   getInstance(): any;
   registerParserMiddleware(): any;
-  enableCors(options: CorsOptions): any;
+  enableCors(options: CorsOptions | CorsOptionsDelegate<TRequest>): any;
   getHttpServer(): any;
   initHttpServer(options: NestApplicationOptions): void;
   close(): any;
   getType(): string;
+  init?(): Promise<void>;
 }

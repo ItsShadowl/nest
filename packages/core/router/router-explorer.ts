@@ -6,9 +6,9 @@ import { Controller } from '@nestjs/common/interfaces/controllers/controller.int
 import { Type } from '@nestjs/common/interfaces/type.interface';
 import { Logger } from '@nestjs/common/services/logger.service';
 import {
+  addLeadingSlash,
   isString,
   isUndefined,
-  validatePath,
 } from '@nestjs/common/utils/shared.utils';
 import * as pathToRegexp from 'path-to-regexp';
 import { ApplicationConfig } from '../application-config';
@@ -73,7 +73,7 @@ export class RouterExplorer {
     module: string,
     applicationRef: T,
     basePath: string,
-    host: string,
+    host: string | string[],
   ) {
     const { instance } = instanceWrapper;
     const routerPaths = this.scanForPaths(instance);
@@ -87,20 +87,20 @@ export class RouterExplorer {
     );
   }
 
-  public extractRouterPath(
-    metatype: Type<Controller>,
-    prefix?: string,
-  ): string {
+  public extractRouterPath(metatype: Type<Controller>, prefix = ''): string[] {
     let path = Reflect.getMetadata(PATH_METADATA, metatype);
-    if (prefix) path = prefix + this.validateRoutePath(path);
-    return this.validateRoutePath(path);
-  }
 
-  public validateRoutePath(path: string): string {
     if (isUndefined(path)) {
       throw new UnknownRequestMappingException();
     }
-    return validatePath(path);
+
+    if (Array.isArray(path)) {
+      path = path.map(p => prefix + addLeadingSlash(p));
+    } else {
+      path = [prefix + addLeadingSlash(path)];
+    }
+
+    return path.map(p => addLeadingSlash(p));
   }
 
   public scanForPaths(
@@ -124,22 +124,23 @@ export class RouterExplorer {
     prototype: object,
     methodName: string,
   ): RoutePathProperties {
-    const targetCallback = prototype[methodName];
-    const routePath = Reflect.getMetadata(PATH_METADATA, targetCallback);
+    const instanceCallback = instance[methodName];
+    const prototypeCallback = prototype[methodName];
+    const routePath = Reflect.getMetadata(PATH_METADATA, prototypeCallback);
     if (isUndefined(routePath)) {
       return null;
     }
     const requestMethod: RequestMethod = Reflect.getMetadata(
       METHOD_METADATA,
-      targetCallback,
+      prototypeCallback,
     );
     const path = isString(routePath)
-      ? [this.validateRoutePath(routePath)]
-      : routePath.map(p => this.validateRoutePath(p));
+      ? [addLeadingSlash(routePath)]
+      : routePath.map(p => addLeadingSlash(p));
     return {
       path,
       requestMethod,
-      targetCallback,
+      targetCallback: instanceCallback,
       methodName,
     };
   }
@@ -150,7 +151,7 @@ export class RouterExplorer {
     instanceWrapper: InstanceWrapper,
     moduleKey: string,
     basePath: string,
-    host: string,
+    host: string | string[],
   ) {
     (routePaths || []).forEach(pathProperties => {
       const { path, requestMethod } = pathProperties;
@@ -179,7 +180,7 @@ export class RouterExplorer {
     instanceWrapper: InstanceWrapper,
     moduleKey: string,
     basePath: string,
-    host: string,
+    host: string | string[],
   ) {
     const {
       path: paths,
@@ -216,14 +217,24 @@ export class RouterExplorer {
     });
   }
 
-  private applyHostFilter(host: string, handler: Function) {
+  private applyHostFilter(host: string | string[], handler: Function) {
     if (!host) {
       return handler;
     }
 
     const httpAdapterRef = this.container.getHttpAdapterRef();
-    const keys = [];
-    const re = pathToRegexp(host, keys);
+    const hosts = Array.isArray(host) ? host : [host];
+    const hostRegExps = hosts.map((host: string) => {
+      const keys = [];
+      const regexp = pathToRegexp(host, keys);
+      return { regexp, keys };
+    });
+
+    const unsupportedFilteringErrorMessage = Array.isArray(host)
+      ? `HTTP adapter does not support filtering on hosts: ["${host.join(
+          '", "',
+        )}"]`
+      : `HTTP adapter does not support filtering on host: "${host}"`;
 
     return <TRequest extends Record<string, any> = any, TResponse = any>(
       req: TRequest,
@@ -232,14 +243,17 @@ export class RouterExplorer {
     ) => {
       (req as Record<string, any>).hosts = {};
       const hostname = httpAdapterRef.getRequestHostname(req) || '';
-      const match = hostname.match(re);
-      if (match) {
-        keys.forEach((key, i) => (req.hosts[key.name] = match[i + 1]));
-        return handler(req, res, next);
+
+      for (const exp of hostRegExps) {
+        const match = hostname.match(exp.regexp);
+        if (match) {
+          exp.keys.forEach((key, i) => (req.hosts[key.name] = match[i + 1]));
+          return handler(req, res, next);
+        }
       }
       if (!next) {
         throw new InternalServerErrorException(
-          `HTTP adapter does not support filtering on host: "${host}"`,
+          unsupportedFilteringErrorMessage,
         );
       }
       return next();

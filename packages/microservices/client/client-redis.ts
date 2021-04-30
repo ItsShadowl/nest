@@ -30,7 +30,9 @@ export class ClientRedis extends ClientProxy {
 
   constructor(protected readonly options: RedisOptions['options']) {
     super();
-    this.url = this.getOptionsProp(options, 'url') || REDIS_DEFAULT_URL;
+    this.url =
+      this.getOptionsProp(options, 'url') ||
+      (!this.getOptionsProp(options, 'host') && REDIS_DEFAULT_URL);
 
     redisPackage = loadPackage('redis', ClientRedis.name, () =>
       require('redis'),
@@ -95,7 +97,9 @@ export class ClientRedis extends ClientProxy {
   public getClientOptions(error$: Subject<Error>): Partial<ClientOpts> {
     const retry_strategy = (options: RetryStrategyOptions) =>
       this.createRetryStrategy(options, error$);
+
     return {
+      ...(this.options || {}),
       retry_strategy,
     };
   }
@@ -188,7 +192,7 @@ export class ClientRedis extends ClientProxy {
     const pattern = this.normalizePattern(packet.pattern);
     const serializedPacket = this.serializer.serialize(packet);
 
-    return new Promise((resolve, reject) =>
+    return new Promise<void>((resolve, reject) =>
       this.pubClient.publish(pattern, JSON.stringify(serializedPacket), err =>
         err ? reject(err) : resolve(),
       ),

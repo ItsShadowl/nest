@@ -6,8 +6,10 @@ import {
 } from '@nestjs/common/interfaces/middleware/middleware-configuration.interface';
 import { NestMiddleware } from '@nestjs/common/interfaces/middleware/nest-middleware.interface';
 import { NestModule } from '@nestjs/common/interfaces/modules/nest-module.interface';
-import { Type } from '@nestjs/common/interfaces/type.interface';
-import { isUndefined, validatePath } from '@nestjs/common/utils/shared.utils';
+import {
+  addLeadingSlash,
+  isUndefined,
+} from '@nestjs/common/utils/shared.utils';
 import { ApplicationConfig } from '../application-config';
 import { InvalidMiddlewareException } from '../errors/exceptions/invalid-middleware.exception';
 import { RuntimeException } from '../errors/exceptions/runtime.exception';
@@ -105,18 +107,19 @@ export class MiddlewareModule {
     applicationRef: any,
   ) {
     const configs = middlewareContainer.getConfigurations();
-    const registerAllConfigs = (
+    const registerAllConfigs = async (
       moduleKey: string,
       middlewareConfig: MiddlewareConfiguration[],
-    ) =>
-      middlewareConfig.map(async (config: MiddlewareConfiguration) => {
+    ) => {
+      for (const config of middlewareConfig) {
         await this.registerMiddlewareConfig(
           middlewareContainer,
           config,
           moduleKey,
           applicationRef,
         );
-      });
+      }
+    };
 
     const entriesSortedByDistance = [...configs.entries()].sort(
       ([moduleA], [moduleB]) => {
@@ -126,10 +129,9 @@ export class MiddlewareModule {
         );
       },
     );
-    const registerModuleConfigs = async ([module, moduleConfigs]) => {
-      await Promise.all(registerAllConfigs(module, [...moduleConfigs]));
-    };
-    await Promise.all(entriesSortedByDistance.map(registerModuleConfigs));
+    for (const [moduleRef, moduleConfigurations] of entriesSortedByDistance) {
+      await registerAllConfigs(moduleRef, [...moduleConfigurations]);
+    }
   }
 
   public async registerMiddlewareConfig(
@@ -139,9 +141,7 @@ export class MiddlewareModule {
     applicationRef: any,
   ) {
     const { forRoutes } = config;
-    const registerRouteMiddleware = async (
-      routeInfo: Type<any> | string | RouteInfo,
-    ) => {
+    for (const routeInfo of forRoutes) {
       await this.registerRouteMiddleware(
         middlewareContainer,
         routeInfo as RouteInfo,
@@ -149,8 +149,7 @@ export class MiddlewareModule {
         moduleKey,
         applicationRef,
       );
-    };
-    await Promise.all(forRoutes.map(registerRouteMiddleware));
+    }
   }
 
   public async registerRouteMiddleware(
@@ -163,25 +162,24 @@ export class MiddlewareModule {
     const middlewareCollection = [].concat(config.middleware);
     const moduleRef = this.container.getModuleByKey(moduleKey);
 
-    await Promise.all(
-      middlewareCollection.map(async (metatype: Type<NestMiddleware>) => {
-        const collection = middlewareContainer.getMiddlewareCollection(
-          moduleKey,
-        );
-        const instanceWrapper = collection.get(metatype.name);
-        if (isUndefined(instanceWrapper)) {
-          throw new RuntimeException();
-        }
-        await this.bindHandler(
-          instanceWrapper,
-          applicationRef,
-          routeInfo.method,
-          routeInfo.path,
-          moduleRef,
-          collection,
-        );
-      }),
-    );
+    for (const metatype of middlewareCollection) {
+      const collection = middlewareContainer.getMiddlewareCollection(moduleKey);
+      const instanceWrapper = collection.get(metatype.name);
+      if (isUndefined(instanceWrapper)) {
+        throw new RuntimeException();
+      }
+      if (instanceWrapper.isTransient) {
+        return;
+      }
+      await this.bindHandler(
+        instanceWrapper,
+        applicationRef,
+        routeInfo.method,
+        routeInfo.path,
+        moduleRef,
+        collection,
+      );
+    }
   }
 
   private async bindHandler(
@@ -196,7 +194,7 @@ export class MiddlewareModule {
     if (isUndefined(instance.use)) {
       throw new InvalidMiddlewareException(metatype.name);
     }
-    const router = applicationRef.createMiddlewareFactory(method);
+    const router = await applicationRef.createMiddlewareFactory(method);
     const isStatic = wrapper.isDependencyTreeStatic();
     if (isStatic) {
       const proxy = await this.createProxy(instance);
@@ -273,7 +271,7 @@ export class MiddlewareModule {
     ) => void,
   ) {
     const prefix = this.config.getGlobalPrefix();
-    const basePath = validatePath(prefix);
+    const basePath = addLeadingSlash(prefix);
     if (basePath && path === '/*') {
       // strip slash when a wildcard is being used
       // and global prefix has been set

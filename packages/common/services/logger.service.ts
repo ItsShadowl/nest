@@ -1,10 +1,9 @@
-import * as clc from 'cli-color';
 import { Injectable } from '../decorators/core/injectable.decorator';
 import { Optional } from '../decorators/core/optional.decorator';
-import { isObject } from '../utils/shared.utils';
+import { clc, yellow } from '../utils/cli-colors.util';
+import { isObject, isPlainObject } from '../utils/shared.utils';
 
 declare const process: any;
-const yellow = clc.xterm(3);
 
 export type LogLevel = 'log' | 'error' | 'warn' | 'debug' | 'verbose';
 
@@ -26,7 +25,7 @@ export class Logger implements LoggerService {
     'verbose',
   ];
   private static lastTimestamp?: number;
-  private static instance?: typeof Logger | LoggerService = Logger;
+  protected static instance?: typeof Logger | LoggerService = Logger;
 
   constructor(
     @Optional() protected context?: string,
@@ -62,6 +61,10 @@ export class Logger implements LoggerService {
     this.context = context;
   }
 
+  getTimestamp() {
+    return Logger.getTimestamp();
+  }
+
   static overrideLogger(logger: LoggerService | LogLevel[] | boolean) {
     if (Array.isArray(logger)) {
       this.logLevels = logger;
@@ -80,7 +83,7 @@ export class Logger implements LoggerService {
     context = '',
     isTimeDiffEnabled = true,
   ) {
-    this.printMessage(message, clc.red, context, isTimeDiffEnabled);
+    this.printMessage(message, clc.red, context, isTimeDiffEnabled, 'stderr');
     this.printStackTrace(trace);
   }
 
@@ -94,6 +97,21 @@ export class Logger implements LoggerService {
 
   static verbose(message: any, context = '', isTimeDiffEnabled = true) {
     this.printMessage(message, clc.cyanBright, context, isTimeDiffEnabled);
+  }
+
+  static getTimestamp() {
+    const localeStringOptions = {
+      year: 'numeric',
+      hour: 'numeric',
+      minute: 'numeric',
+      second: 'numeric',
+      day: '2-digit',
+      month: '2-digit',
+    };
+    return new Date(Date.now()).toLocaleString(
+      undefined,
+      localeStringOptions as Intl.DateTimeFormatOptions,
+    );
   }
 
   private callFunction(
@@ -115,7 +133,7 @@ export class Logger implements LoggerService {
       );
   }
 
-  private getInstance(): typeof Logger | LoggerService {
+  protected getInstance(): typeof Logger | LoggerService {
     const { instance } = Logger;
     return instance === this ? Logger : instance;
   }
@@ -129,31 +147,22 @@ export class Logger implements LoggerService {
     color: (message: string) => string,
     context = '',
     isTimeDiffEnabled?: boolean,
+    writeStreamType?: 'stdout' | 'stderr',
   ) {
-    const output = isObject(message)
+    const output = isPlainObject(message)
       ? `${color('Object:')}\n${JSON.stringify(message, null, 2)}\n`
       : color(message);
-
-    const localeStringOptions = {
-      year: 'numeric',
-      hour: 'numeric',
-      minute: 'numeric',
-      second: 'numeric',
-      day: '2-digit',
-      month: '2-digit',
-    };
-    const timestamp = new Date(Date.now()).toLocaleString(
-      undefined,
-      localeStringOptions,
-    );
 
     const pidMessage = color(`[Nest] ${process.pid}   - `);
     const contextMessage = context ? yellow(`[${context}] `) : '';
     const timestampDiff = this.updateAndGetTimestampDiff(isTimeDiffEnabled);
+    const instance = (this.instance as typeof Logger) ?? Logger;
+    const timestamp = instance.getTimestamp
+      ? instance.getTimestamp()
+      : Logger.getTimestamp?.();
+    const computedMessage = `${pidMessage}${timestamp}   ${contextMessage}${output}${timestampDiff}\n`;
 
-    process.stdout.write(
-      `${pidMessage}${timestamp}   ${contextMessage}${output}${timestampDiff}\n`,
-    );
+    process[writeStreamType ?? 'stdout'].write(computedMessage);
   }
 
   private static updateAndGetTimestampDiff(
@@ -171,6 +180,6 @@ export class Logger implements LoggerService {
     if (!trace) {
       return;
     }
-    process.stdout.write(`${trace}\n`);
+    process.stderr.write(`${trace}\n`);
   }
 }

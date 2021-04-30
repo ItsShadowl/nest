@@ -10,11 +10,13 @@ import {
   ERROR_EVENT,
   RQM_DEFAULT_IS_GLOBAL_PREFETCH_COUNT,
   RQM_DEFAULT_NOACK,
+  RQM_DEFAULT_PERSISTENT,
   RQM_DEFAULT_PREFETCH_COUNT,
   RQM_DEFAULT_QUEUE,
   RQM_DEFAULT_QUEUE_OPTIONS,
   RQM_DEFAULT_URL,
 } from '../constants';
+import { RmqUrl } from '../external/rmq-url.interface';
 import { ReadPacket, RmqOptions, WritePacket } from '../interfaces';
 import { ClientProxy } from './client-proxy';
 
@@ -27,10 +29,12 @@ export class ClientRMQ extends ClientProxy {
   protected connection: Promise<any>;
   protected client: any = null;
   protected channel: any = null;
-  protected urls: string[];
+  protected urls: string[] | RmqUrl[];
   protected queue: string;
   protected queueOptions: any;
   protected responseEmitter: EventEmitter;
+  protected replyQueue: string;
+  protected persistent: boolean;
 
   constructor(protected readonly options: RmqOptions['options']) {
     super();
@@ -40,7 +44,10 @@ export class ClientRMQ extends ClientProxy {
     this.queueOptions =
       this.getOptionsProp(this.options, 'queueOptions') ||
       RQM_DEFAULT_QUEUE_OPTIONS;
-
+    this.replyQueue =
+      this.getOptionsProp(this.options, 'replyQueue') || REPLY_QUEUE;
+    this.persistent =
+      this.getOptionsProp(this.options, 'persistent') || RQM_DEFAULT_PERSISTENT;
     loadPackage('amqplib', ClientRMQ.name, () => require('amqplib'));
     rqmPackage = loadPackage('amqp-connection-manager', ClientRMQ.name, () =>
       require('amqp-connection-manager'),
@@ -61,7 +68,7 @@ export class ClientRMQ extends ClientProxy {
     const noAck = this.getOptionsProp(this.options, 'noAck', RQM_DEFAULT_NOACK);
     this.channel.addSetup((channel: any) =>
       channel.consume(
-        REPLY_QUEUE,
+        this.replyQueue,
         (msg: any) =>
           this.responseEmitter.emit(msg.properties.correlationId, msg),
         {
@@ -183,8 +190,9 @@ export class ClientRMQ extends ClientProxy {
         this.queue,
         Buffer.from(JSON.stringify(serializedPacket)),
         {
-          replyTo: REPLY_QUEUE,
+          replyTo: this.replyQueue,
           correlationId,
+          persistent: this.persistent,
         },
       );
       return () => this.responseEmitter.removeListener(correlationId, listener);
@@ -196,12 +204,14 @@ export class ClientRMQ extends ClientProxy {
   protected dispatchEvent(packet: ReadPacket): Promise<any> {
     const serializedPacket = this.serializer.serialize(packet);
 
-    return new Promise((resolve, reject) =>
+    return new Promise<void>((resolve, reject) =>
       this.channel.sendToQueue(
         this.queue,
         Buffer.from(JSON.stringify(serializedPacket)),
-        {},
-        err => (err ? reject(err) : resolve()),
+        {
+          persistent: this.persistent,
+        },
+        (err: unknown) => (err ? reject(err) : resolve()),
       ),
     );
   }

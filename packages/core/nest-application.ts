@@ -9,11 +9,14 @@ import {
   PipeTransform,
   WebSocketAdapter,
 } from '@nestjs/common';
-import { CorsOptions } from '@nestjs/common/interfaces/external/cors-options.interface';
+import {
+  CorsOptions,
+  CorsOptionsDelegate,
+} from '@nestjs/common/interfaces/external/cors-options.interface';
 import { NestApplicationOptions } from '@nestjs/common/interfaces/nest-application-options.interface';
 import { Logger } from '@nestjs/common/services/logger.service';
 import { loadPackage } from '@nestjs/common/utils/load-package.util';
-import { isObject, validatePath } from '@nestjs/common/utils/shared.utils';
+import { addLeadingSlash, isObject } from '@nestjs/common/utils/shared.utils';
 import { iterate } from 'iterare';
 import { platform } from 'os';
 import { AbstractHttpAdapter } from './adapters';
@@ -40,7 +43,8 @@ const {
 /**
  * @publicApi
  */
-export class NestApplication extends NestApplicationContext
+export class NestApplication
+  extends NestApplicationContext
   implements INestApplication {
   private readonly logger = new Logger(NestApplication.name, true);
   private readonly middlewareModule = new MiddlewareModule();
@@ -75,6 +79,7 @@ export class NestApplication extends NestApplicationContext
 
   protected async dispose(): Promise<void> {
     this.socketModule && (await this.socketModule.close());
+    this.microservicesModule && (await this.microservicesModule.close());
     this.httpAdapter && (await this.httpAdapter.close());
 
     await Promise.all(
@@ -101,11 +106,15 @@ export class NestApplication extends NestApplicationContext
     if (!this.appOptions || !this.appOptions.cors) {
       return undefined;
     }
-    const isCorsOptionsObj = isObject(this.appOptions.cors);
-    if (!isCorsOptionsObj) {
+    const passCustomOptions =
+      isObject(this.appOptions.cors) ||
+      typeof this.appOptions.cors === 'function';
+    if (!passCustomOptions) {
       return this.enableCors();
     }
-    return this.enableCors(this.appOptions.cors as CorsOptions);
+    return this.enableCors(
+      this.appOptions.cors as CorsOptions | CorsOptionsDelegate<any>,
+    );
   }
 
   public createServer<T = any>(): T {
@@ -138,6 +147,7 @@ export class NestApplication extends NestApplicationContext
 
   public async init(): Promise<this> {
     this.applyOptions();
+    await this.httpAdapter?.init();
 
     const useBodyParser =
       this.appOptions && this.appOptions.bodyParser !== false;
@@ -162,7 +172,7 @@ export class NestApplication extends NestApplicationContext
     await this.registerMiddleware(this.httpAdapter);
 
     const prefix = this.config.getGlobalPrefix();
-    const basePath = validatePath(prefix);
+    const basePath = addLeadingSlash(prefix);
     this.routesResolver.resolve(this.httpAdapter, basePath);
   }
 
@@ -222,7 +232,7 @@ export class NestApplication extends NestApplicationContext
     return this;
   }
 
-  public enableCors(options?: CorsOptions): void {
+  public enableCors(options?: CorsOptions | CorsOptionsDelegate<any>): void {
     this.httpAdapter.enableCors(options);
   }
 
@@ -237,8 +247,8 @@ export class NestApplication extends NestApplicationContext
   ): Promise<any>;
   public async listen(port: number | string, ...args: any[]): Promise<any> {
     !this.isInitialized && (await this.init());
-    this.httpAdapter.listen(port, ...args);
     this.isListening = true;
+    this.httpAdapter.listen(port, ...args);
     return this.httpServer;
   }
 
@@ -346,7 +356,7 @@ export class NestApplication extends NestApplicationContext
   }
 
   private listenToPromise(microservice: INestMicroservice) {
-    return new Promise(async resolve => {
+    return new Promise<void>(async resolve => {
       await microservice.listen(resolve);
     });
   }

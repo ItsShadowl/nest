@@ -10,6 +10,7 @@ import {
   Subscription,
 } from 'rxjs';
 import { catchError, finalize, publish } from 'rxjs/operators';
+import { NO_EVENT_HANDLER } from '../constants';
 import { BaseRpcContext } from '../ctx-host/base-rpc.context';
 import { IncomingRequestDeserializer } from '../deserializers/incoming-request.deserializer';
 import {
@@ -30,7 +31,6 @@ import { ConsumerDeserializer } from '../interfaces/deserializer.interface';
 import { ConsumerSerializer } from '../interfaces/serializer.interface';
 import { IdentitySerializer } from '../serializers/identity.serializer';
 import { transformPatternToRoute } from '../utils';
-import { NO_EVENT_HANDLER } from '../constants';
 
 export abstract class Server {
   protected readonly messageHandlers = new Map<string, MessageHandler>();
@@ -43,7 +43,7 @@ export abstract class Server {
     callback: MessageHandler,
     isEventHandler = false,
   ) {
-    const route = transformPatternToRoute(pattern);
+    const route = this.normalizePattern(pattern);
     callback.isEventHandler = isEventHandler;
     this.messageHandlers.set(route, callback);
   }
@@ -61,14 +61,16 @@ export abstract class Server {
 
   public send(
     stream$: Observable<any>,
-    respond: (data: WritePacket) => void,
+    respond: (data: WritePacket) => unknown | Promise<unknown>,
   ): Subscription {
     let dataBuffer: WritePacket[] = null;
     const scheduleOnNextTick = (data: WritePacket) => {
       if (!dataBuffer) {
         dataBuffer = [data];
-        process.nextTick(() => {
-          dataBuffer.forEach(buffer => respond(buffer));
+        process.nextTick(async () => {
+          for (const item of dataBuffer) {
+            await respond(item);
+          }
           dataBuffer = null;
         });
       } else if (!data.isDisposed) {
@@ -95,7 +97,9 @@ export abstract class Server {
   ): Promise<any> {
     const handler = this.getHandlerByPattern(pattern);
     if (!handler) {
-      return this.logger.error(NO_EVENT_HANDLER);
+      return this.logger.error(
+        `${NO_EVENT_HANDLER} Event pattern: ${JSON.stringify(pattern)}.`,
+      );
     }
     const resultOrStream = await handler(packet.data, context);
     if (this.isObservable(resultOrStream)) {
@@ -103,13 +107,13 @@ export abstract class Server {
     }
   }
 
-  public transformToObservable<T = any>(resultOrDeffered: any): Observable<T> {
-    if (resultOrDeffered instanceof Promise) {
-      return fromPromise(resultOrDeffered);
-    } else if (!this.isObservable(resultOrDeffered)) {
-      return of(resultOrDeffered);
+  public transformToObservable<T = any>(resultOrDeferred: any): Observable<T> {
+    if (resultOrDeferred instanceof Promise) {
+      return fromPromise(resultOrDeferred);
+    } else if (!this.isObservable(resultOrDeferred)) {
+      return of(resultOrDeferred);
     }
-    return resultOrDeffered;
+    return resultOrDeferred;
   }
 
   public getOptionsProp<
@@ -176,6 +180,10 @@ export abstract class Server {
       // Uses a fundamental object (`pattern` variable without any conversion)
       validPattern = pattern;
     }
-    return transformPatternToRoute(validPattern);
+    return this.normalizePattern(validPattern);
+  }
+
+  protected normalizePattern(pattern: MsPattern): string {
+    return transformPatternToRoute(pattern);
   }
 }

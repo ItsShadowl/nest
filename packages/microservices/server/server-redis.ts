@@ -30,7 +30,9 @@ export class ServerRedis extends Server implements CustomTransportStrategy {
 
   constructor(private readonly options: RedisOptions['options']) {
     super();
-    this.url = this.getOptionsProp(this.options, 'url') || REDIS_DEFAULT_URL;
+    this.url =
+      this.getOptionsProp(options, 'url') ||
+      (!this.getOptionsProp(options, 'host') && REDIS_DEFAULT_URL);
 
     redisPackage = this.loadPackage('redis', ServerRedis.name, () =>
       require('redis'),
@@ -152,7 +154,9 @@ export class ServerRedis extends Server implements CustomTransportStrategy {
   public getClientOptions(): Partial<ClientOpts> {
     const retry_strategy = (options: RetryStrategyOptions) =>
       this.createRetryStrategy(options);
+
     return {
+      ...(this.options || {}),
       retry_strategy,
     };
   }

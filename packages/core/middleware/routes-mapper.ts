@@ -2,9 +2,9 @@ import { RequestMethod } from '@nestjs/common';
 import { PATH_METADATA } from '@nestjs/common/constants';
 import { RouteInfo, Type } from '@nestjs/common/interfaces';
 import {
+  addLeadingSlash,
   isString,
   isUndefined,
-  validatePath,
 } from '@nestjs/common/utils/shared.utils';
 import { NestContainer } from '../injector/container';
 import { MetadataScanner } from '../metadata-scanner';
@@ -28,8 +28,11 @@ export class RoutesMapper {
         },
       ];
     }
-    const routePath: string = Reflect.getMetadata(PATH_METADATA, route);
-    if (this.isRouteInfo(routePath, route)) {
+    const routePathOrPaths: string | string[] = Reflect.getMetadata(
+      PATH_METADATA,
+      route,
+    );
+    if (this.isRouteInfo(routePathOrPaths, route)) {
       return [
         {
           path: this.validateRoutePath(route.path),
@@ -43,32 +46,39 @@ export class RoutesMapper {
     );
     const concatPaths = <T>(acc: T[], currentValue: T[]) =>
       acc.concat(currentValue);
-    return paths
-      .map(
-        item =>
-          item.path &&
-          item.path.map(p => ({
-            path:
-              this.validateGlobalPath(routePath) + this.validateRoutePath(p),
-            method: item.requestMethod,
-          })),
+
+    return []
+      .concat(routePathOrPaths)
+      .map(routePath =>
+        paths
+          .map(
+            item =>
+              item.path &&
+              item.path.map(p => ({
+                path:
+                  this.validateGlobalPath(routePath) +
+                  this.validateRoutePath(p),
+                method: item.requestMethod,
+              })),
+          )
+          .reduce(concatPaths, []),
       )
       .reduce(concatPaths, []);
   }
 
   private isRouteInfo(
-    path: string | undefined,
+    path: string | string[] | undefined,
     objectOrClass: Function | RouteInfo,
   ): objectOrClass is RouteInfo {
     return isUndefined(path);
   }
 
   private validateGlobalPath(path: string): string {
-    const prefix = validatePath(path);
+    const prefix = addLeadingSlash(path);
     return prefix === '/' ? '' : prefix;
   }
 
   private validateRoutePath(path: string): string {
-    return validatePath(path);
+    return addLeadingSlash(path);
   }
 }

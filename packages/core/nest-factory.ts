@@ -15,6 +15,7 @@ import { ApplicationConfig } from './application-config';
 import { MESSAGES } from './constants';
 import { ExceptionsZone } from './errors/exceptions-zone';
 import { loadAdapter } from './helpers/load-adapter';
+import { rethrow } from './helpers/rethrow';
 import { NestContainer } from './injector/container';
 import { InstanceLoader } from './injector/instance-loader';
 import { MetadataScanner } from './metadata-scanner';
@@ -27,6 +28,7 @@ import { DependenciesScanner } from './scanner';
  */
 export class NestFactoryStatic {
   private readonly logger = new Logger('NestFactory', true);
+  private abortOnError = true;
   /**
    * Creates an instance of NestApplication.
    *
@@ -67,7 +69,7 @@ export class NestFactoryStatic {
 
     const applicationConfig = new ApplicationConfig();
     const container = new NestContainer(applicationConfig);
-
+    this.setAbortOnError(serverOrOptions, options);
     this.applyLogger(appOptions);
     await this.initialize(module, container, applicationConfig, httpServer);
 
@@ -101,7 +103,7 @@ export class NestFactoryStatic {
     );
     const applicationConfig = new ApplicationConfig();
     const container = new NestContainer(applicationConfig);
-
+    this.setAbortOnError(options);
     this.applyLogger(options);
 
     await this.initialize(module, container, applicationConfig);
@@ -124,10 +126,9 @@ export class NestFactoryStatic {
     options?: NestApplicationContextOptions,
   ): Promise<INestApplicationContext> {
     const container = new NestContainer();
-
+    this.setAbortOnError(options);
     this.applyLogger(options);
     await this.initialize(module, container);
-
     const modules = container.getModules().values();
     const root = modules.next().value;
     const context = this.createNestInstance<NestApplicationContext>(
@@ -147,22 +148,34 @@ export class NestFactoryStatic {
     httpServer: HttpServer = null,
   ) {
     const instanceLoader = new InstanceLoader(container);
+    const metadataScanner = new MetadataScanner();
     const dependenciesScanner = new DependenciesScanner(
       container,
-      new MetadataScanner(),
+      metadataScanner,
       config,
     );
     container.setHttpAdapter(httpServer);
+
+    const teardown = this.abortOnError === false ? rethrow : undefined;
+    await httpServer?.init();
     try {
       this.logger.log(MESSAGES.APPLICATION_START);
+
       await ExceptionsZone.asyncRun(async () => {
         await dependenciesScanner.scan(module);
         await instanceLoader.createInstancesOfDependencies();
         dependenciesScanner.applyApplicationProviders();
-      });
+      }, teardown);
     } catch (e) {
+      this.handleInitializationError(e);
+    }
+  }
+
+  private handleInitializationError(err: unknown) {
+    if (this.abortOnError) {
       process.abort();
     }
+    rethrow(err);
   }
 
   private createProxy(target: any) {
@@ -189,20 +202,23 @@ export class NestFactoryStatic {
     receiver: Record<string, any>,
     prop: string,
   ): Function {
+    const teardown = this.abortOnError === false ? rethrow : undefined;
+
     return (...args: unknown[]) => {
       let result: unknown;
       ExceptionsZone.run(() => {
         result = receiver[prop](...args);
-      });
+      }, teardown);
+
       return result;
     };
   }
 
   private applyLogger(options: NestApplicationContextOptions | undefined) {
-    if (!options) {
+    if (!options || options?.logger === true || isNil(options?.logger)) {
       return;
     }
-    !isNil(options.logger) && Logger.overrideLogger(options.logger);
+    Logger.overrideLogger(options.logger);
   }
 
   private createHttpAdapter<T = any>(httpServer?: T): AbstractHttpAdapter {
@@ -222,15 +238,39 @@ export class NestFactoryStatic {
     );
   }
 
+  private setAbortOnError(
+    serverOrOptions?: AbstractHttpAdapter | NestApplicationOptions,
+    options?: NestApplicationContextOptions | NestApplicationOptions,
+  ) {
+    this.abortOnError = this.isHttpServer(serverOrOptions)
+      ? !(options && options.abortOnError === false)
+      : !(serverOrOptions && serverOrOptions.abortOnError === false);
+  }
+
   private createAdapterProxy<T>(app: NestApplication, adapter: HttpServer): T {
-    return (new Proxy(app, {
+    const proxy = new Proxy(app, {
       get: (receiver: Record<string, any>, prop: string) => {
         if (!(prop in receiver) && prop in adapter) {
-          return this.createExceptionZone(adapter, prop);
+          return (...args: unknown[]) => {
+            this.createExceptionZone(adapter, prop)(...args);
+            return proxy;
+          };
+        }
+        if (isFunction(receiver[prop])) {
+          const mapToProxy = (result: unknown) =>
+            result instanceof NestApplication ? proxy : result;
+
+          return (...args: unknown[]) => {
+            const result = receiver[prop](...args);
+            return result instanceof Promise
+              ? result.then(mapToProxy)
+              : mapToProxy(result);
+          };
         }
         return receiver[prop];
       },
-    }) as unknown) as T;
+    });
+    return (proxy as unknown) as T;
   }
 }
 
